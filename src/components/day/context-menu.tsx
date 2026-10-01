@@ -191,7 +191,7 @@ export function ContextMenu({
           )}
 
           <Section title={`Activities · start at ${formatTime(tz, at)}`}>
-            {liveTypes.length === 0 && <p className="px-2 py-1 text-xs text-muted">No activities yet — add some in Settings.</p>}
+            {liveTypes.length === 0 && <p className="px-2 py-1 text-xs text-muted">No activities yet — add one with ＋ Activity on the timer bar.</p>}
             <div className="grid grid-cols-2 gap-1">
               {liveTypes.map((t) => (
                 <button
@@ -215,7 +215,7 @@ export function ContextMenu({
 
           <Section title="Exercises">
             {liveExercises.length === 0 && (
-              <p className="px-2 py-1 text-xs text-muted">No exercises yet — add them in Settings.</p>
+              <p className="px-2 py-1 text-xs text-muted">No exercises yet.</p>
             )}
             {liveExercises.map((e) => (
               <Item key={e.id} onClick={act(() => handlers.exercise(e.id, at))}>

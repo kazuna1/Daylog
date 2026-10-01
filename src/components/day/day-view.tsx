@@ -186,13 +186,8 @@ export function DayView({
           dateLabel={isToday ? formatDay(data.day, { weekday: "long", month: "long" }) : String(new Date(data.startMs).getUTCFullYear())}
         >
           <div className="flex flex-wrap items-center gap-2">
-            {isToday ? (
-              running.length === 0 ? (
-                <span className="rounded-full bg-black/15 px-3 py-1 text-xs backdrop-blur">
-                  Nothing running · press Start, or drag across the timeline to log a finished block
-                </span>
-              ) : (
-                running.map((a) => (
+            {isToday
+              ? running.map((a) => (
                   <span key={a.id} className="flex items-center gap-2 rounded-full bg-black/20 py-1 pr-1 pl-3 text-sm backdrop-blur">
                     <span className="h-2 w-2 animate-pulse rounded-full" style={{ background: a.color }} />
                     {emojiFor(a)} {a.name}
@@ -205,33 +200,48 @@ export function DayView({
                     </button>
                   </span>
                 ))
-              )
-            ) : null}
+              : null}
           </div>
 
-          <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs">
+          <div className="mt-2 flex items-center gap-2">
             <Link
               href={`/day/${prevDay}`}
-              className="rounded-full bg-black/20 px-2.5 py-1 backdrop-blur hover:bg-black/30"
+              aria-label="Previous day"
               title="Previous day"
+              className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-black/20 text-xl leading-none backdrop-blur transition hover:bg-black/35"
             >
-              ‹ {formatDay(prevDay)}
+              ‹
             </Link>
+
+            <span className="rounded-full bg-black/20 px-4 py-2 text-base font-semibold whitespace-nowrap backdrop-blur">
+              {isToday ? "Today" : formatDay(data.day)}
+            </span>
+
             {isToday ? (
-              <span className="rounded-full bg-white/80 px-2.5 py-1 font-semibold text-black">Today</span>
+              <span
+                aria-hidden
+                className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-black/10 text-xl leading-none opacity-30"
+              >
+                ›
+              </span>
             ) : (
-              <>
-                <Link
-                  href={nextDay >= todayKey ? "/" : `/day/${nextDay}`}
-                  className="rounded-full bg-black/20 px-2.5 py-1 backdrop-blur hover:bg-black/30"
-                  title="Next day"
-                >
-                  {formatDay(nextDay)} ›
-                </Link>
-                <Link href="/" className="rounded-full bg-white/80 px-2.5 py-1 font-semibold text-black">
-                  Today
-                </Link>
-              </>
+              <Link
+                href={nextDay >= todayKey ? "/" : `/day/${nextDay}`}
+                aria-label="Next day"
+                title="Next day"
+                className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-black/20 text-xl leading-none backdrop-blur transition hover:bg-black/35"
+              >
+                ›
+              </Link>
+            )}
+
+            {!isToday && (
+              <Link
+                href="/"
+                className="rounded-full bg-white/85 px-3 py-2 text-sm font-semibold text-black transition hover:bg-white"
+              >
+                Today
+              </Link>
             )}
           </div>
         </Sky>

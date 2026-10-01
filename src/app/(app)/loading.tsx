@@ -1,4 +1,4 @@
-/** Neutral placeholder for the list-shaped pages (Notes, Settings). */
+/** Neutral placeholder for the list-shaped pages (Notes, Configuration). */
 export default function Loading() {
   return (
     <div className="mx-auto w-full max-w-2xl animate-pulse px-3 py-5 sm:px-5">

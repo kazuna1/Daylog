@@ -2,8 +2,11 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   async redirects() {
-    // The settings page used to live at /types.
-    return [{ source: "/types", destination: "/settings", permanent: true }];
+    // Old names for the configuration page.
+    return [
+      { source: "/types", destination: "/configuration", permanent: true },
+      { source: "/settings", destination: "/configuration", permanent: true },
+    ];
   },
 };
 
