@@ -59,6 +59,7 @@ export async function loadDay(tz: string, day: string, retry = true): Promise<Da
       await new Promise((r) => setTimeout(r, 150));
       return loadDay(tz, day, false);
     }
+    console.error("[daylog] day query failed", { day, message: firstError.message, code: firstError.code });
     throw new Error(firstError.message);
   }
 

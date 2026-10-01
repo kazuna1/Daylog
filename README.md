@@ -83,6 +83,7 @@ Migrations live in `supabase/migrations/`. After changing the schema, update `sr
 
 ## Speed
 
+- Sessions: the proxy renews the Supabase session. When it does, it answers that page load with a 307 to the same URL carrying the fresh cookies, so the page never renders with the token the browser sent (already expired) — that race was the "error, then it works after a reload" on the first visit of the day. A `daylog_renewed` cookie (10 s) makes a loop impossible.
 - Timeline changes are optimistic: they show instantly and save in the background (rolled back with an error toast if the save fails). Ids are generated in the browser so the saved row matches what you see.
 - Each change is one database round trip (~130 ms to Seoul).
 - `vercel.json` pins the server to **Seoul (`icn1`)**, next to the database. Without it Vercel runs in the US and every query crosses the Pacific.
