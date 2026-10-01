@@ -94,6 +94,17 @@ export type Database = {
         },
         "name"
       >;
+      notes: Table<
+        {
+          id: string;
+          user_id: string;
+          body: string;
+          pinned: boolean;
+          created_at: string;
+          updated_at: string;
+        },
+        "body"
+      >;
       pain_types: Table<
         {
           id: string;
@@ -158,5 +169,6 @@ export type ActionType = Tables<"action_types">;
 export type Action = Tables<"actions">;
 export type PainType = Tables<"pain_types">;
 export type Exercise = Tables<"exercises">;
+export type Note = Tables<"notes">;
 export type PainLevel = Tables<"pain_levels">;
 export type PainEvent = Tables<"pain_events">;

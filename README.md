@@ -22,6 +22,7 @@ Personal day timeline for back pain. Log what you do (with start/end), how your 
   - **Erase day** (trash icon above the timeline): deletes every action, pain reading and pain event of that day after a yes/no confirmation
   - At midnight the page rolls over to a fresh, empty day
 - **All days** (`/days`) — **7d**: seven tall day columns with stats · **30d**: a calendar (7 weekday columns, Monday first) where each square shows that day's actions across 00→24 and its pain bar · **90d**: three 30-day calendar cards in one row. Hover a day for its summary; click to open it (`/day/YYYY-MM-DD`)
+- **Notes** (`/notes`) — free notes with no time attached: patterns you notice, things to try, questions for the doctor. Write, edit, pin to the top, delete (asks first); search appears past five notes. Notes about a specific moment stay on the timeline (on an activity, an exercise or a pain event)
 - **Settings** (`/settings`) — **Timer bar**: which activities are on it, their order and their notification thresholds · **Actions**: define everything you can log — emoji, colour, name, with edit, archive and delete · **Exercises**: the library with sets, reps, weight, rest and cues · **Pain types** · **This device**: timezone and alerts. The old `/types` URL redirects here
 
 ## Data model
@@ -34,6 +35,7 @@ Personal day timeline for back pain. Log what you do (with start/end), how your 
 | `exercises` | Your exercise library: name, emoji, colour, usual sets, reps, weight, rest, minutes, cues |
 | `pain_levels` | Pain readings (0–10). Each holds until the next → a continuous line |
 | `pain_events` | One-off pain moments of a given type, with intensity |
+| `notes` | Free notes: body, pinned, created/updated. No time anchor |
 
 All tables have owner-only RLS. Nothing is created automatically: a fresh account stays empty until you add your own activities, exercises and pain types. Settings offers `seed_default_types()` as an opt-in **Add starter set** button while everything is empty.
 Because the pain line is continuous, "pain before/after an action" can be derived for analysis later.
@@ -77,6 +79,8 @@ All Supabase values are server-only; nothing database-related is sent to the bro
 Point a local server at it with `DAYLOG_DB_EMAIL=sandbox@daylog.local DAYLOG_DB_PASSWORD=… npm start`.
 
 ## Database
+
+Route groups: `(app)/(timeline)` holds Today and `/day/[date]` so they share the timeline-shaped loading skeleton; the list pages use the neutral one. Group names never appear in URLs.
 
 Migrations live in `supabase/migrations/`. After changing the schema, update `src/lib/database.types.ts`
 (or regenerate: `npx supabase gen types typescript --project-id ijcmrejyckhoajancfbr`).
