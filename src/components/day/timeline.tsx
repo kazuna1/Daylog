@@ -27,6 +27,7 @@ export type TimelineHandle = {
 
 const LONG_PRESS_MS = 450;
 const HOUR = 3_600_000;
+const DAY = 24 * HOUR;
 /** Ask for more days once the edge is this close, measured in screens. */
 const EDGE_SCREENS = 0.75;
 
@@ -388,25 +389,55 @@ export function Timeline({
                 style={{ left: left(t) }}
               />
             ))}
-            {/* midnight, where one day becomes the next */}
-            {visibleDays.map((d) => (
-              <div key={d.day} className="absolute top-0 bottom-0 border-l-2 border-line" style={{ left: left(d.startMs) }} />
-            ))}
+            {/* every other day gets a wash, so the two sides of midnight never blur together */}
+            {visibleDays
+              .filter((d) => Math.floor(d.startMs / DAY) % 2 === 0)
+              .map((d) => (
+                <div
+                  key={`wash-${d.day}`}
+                  className="absolute top-7 bottom-0 bg-ink/[0.035]"
+                  style={{ left: left(d.startMs), width: `${((d.endMs - d.startMs) / spanMs) * 100}%` }}
+                />
+              ))}
+            {/* midnight: loud enough that you never cross it by accident */}
+            {visibleDays.map((d) =>
+              d.startMs <= span.startMs ? null : (
+                <div key={d.day} className="absolute top-0 bottom-0" style={{ left: left(d.startMs) }}>
+                  <div className="absolute inset-y-0 -left-8 w-16 bg-gradient-to-r from-transparent via-accent/20 to-transparent" />
+                  <div className="absolute inset-y-0 -left-0.5 w-1 rounded-full bg-accent" />
+                </div>
+              ),
+            )}
           </div>
 
           {/* ruler: the day's name, then the hours */}
-          <div className="relative h-6 shrink-0 border-b border-line text-[10px] text-muted tabular-nums">
-            {visibleDays.map((d) => (
-              <span
-                key={d.day}
-                className="absolute top-0.5 pl-1.5 text-[10px] font-semibold tracking-wide text-ink/70 uppercase"
-                style={{ left: left(d.startMs) }}
-              >
-                {formatDay(d.day)}
-              </span>
-            ))}
+          <div className="relative h-7 shrink-0 border-b border-line text-[10px] text-muted tabular-nums">
+            {visibleDays.map((d) =>
+              d.startMs <= span.startMs ? (
+                <span
+                  key={d.day}
+                  className="absolute top-0.5 z-[2] pl-1.5 text-[10px] font-semibold tracking-wide text-ink/70 uppercase"
+                  style={{ left: left(d.startMs) }}
+                >
+                  {formatDay(d.day)}
+                </span>
+              ) : (
+                <span
+                  key={d.day}
+                  className="absolute top-0 z-[2] -translate-x-1/2 rounded-b-lg bg-accent px-2.5 py-[3px] text-[10px] font-bold tracking-wider whitespace-nowrap text-[var(--accent-ink)] uppercase shadow-sm"
+                  style={{ left: left(d.startMs) }}
+                >
+                  {formatDay(d.day)}
+                </span>
+              ),
+            )}
             {ticks
-              .filter((t) => Math.round((t - span.startMs) / 60_000) % labelEvery === 0)
+              .filter(
+                (t) =>
+                  Math.round((t - span.startMs) / 60_000) % labelEvery === 0 &&
+                  // midnight already carries the day's name
+                  !visibleDays.some((d) => d.startMs === t && t > span.startMs),
+              )
               .map((t) => (
                 <span key={t} className="absolute bottom-0 pl-1 opacity-70" style={{ left: left(t) }}>
                   {formatTime(tz, t)}
@@ -645,7 +676,7 @@ function Toolbar({
 
 function LaneLabel({ children }: { children: React.ReactNode }) {
   return (
-    <span className="pointer-events-none sticky left-2 z-[4] -mb-4 block w-max rounded bg-surface-1/80 px-1.5 py-px text-[10px] font-semibold tracking-wider text-muted/80 uppercase backdrop-blur-[2px]">
+    <span className="pointer-events-none sticky left-2 z-[4] -mb-4 block w-max rounded bg-surface/85 px-1.5 py-px text-[10px] font-semibold tracking-wider text-muted/80 uppercase backdrop-blur-[2px]">
       {children}
     </span>
   );

@@ -8,7 +8,7 @@ Personal day timeline for back pain. Log what you do (with start/end), how your 
 
 - **Today** (`/`) — one screen for the whole day
   - **Sky** (top): time-of-day colors, sun/moon position, clock, weather (Open-Meteo), running actions with an **End** button
-  - **Timeline** (~60%): one endless strip, not a page per day. Action lanes → pain events → pain level line. Scroll sideways and it just keeps going: midnight is a dashed separator with the day's name on the ruler, and the sky title, clock and colours follow whatever day is under the middle of the screen. Earlier days load on their own as you approach the edge (three at a time, up to 90 back; it never scrolls past tomorrow)
+  - **Timeline** (~60%): one endless strip, not a page per day. Action lanes → pain events → pain level line. Scroll sideways and it just keeps going: midnight is unmissable — a thick accent rule with a soft halo, the new day's name on a solid chip above it, and every other day washed a shade darker so the two sides never blur together, and the sky title, clock and colours follow whatever day is under the middle of the screen. Earlier days load on their own as you approach the edge (three at a time, up to 90 back; it never scrolls past tomorrow)
   - **View window**: the clock button above the timeline sets how many hours are visible (2–24h presets or custom). Move with ‹ › / Now, arrow keys, scroll or swipe; Ctrl + scroll zooms. Saved per device (`view_hours` cookie)
   - **Hover** (or long-press on touch) shows the exact HH:MM under the cursor — the same time a right-click will use
   - **Pain glider** (bottom): move it when your pain changes; it records a reading and the line holds that level until the next one
