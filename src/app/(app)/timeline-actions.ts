@@ -3,6 +3,9 @@
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { isCategory } from "@/lib/categories";
+import { loadEntries, type RangeEntries } from "@/lib/day-data";
+import { getTz } from "@/lib/tz";
+import { isDay } from "@/lib/time";
 
 export type Result = { error?: string };
 
@@ -411,4 +414,21 @@ export async function logExercise(input: {
     notes: cleanNotes(input.notes),
   });
   return done(res.error);
+}
+
+// ---- timeline range ------------------------------------------------------
+
+/** Entries for a stretch of days, for scrolling further back without a reload. */
+export async function fetchEntries(input: { fromDay: string; toDay: string }): Promise<
+  { data: RangeEntries; error?: undefined } | { data?: undefined; error: string }
+> {
+  if (!isDay(input.fromDay) || !isDay(input.toDay) || input.fromDay > input.toDay) {
+    return { error: "Bad range." };
+  }
+  try {
+    const tz = await getTz();
+    return { data: await loadEntries(tz, input.fromDay, input.toDay) };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Could not load those days." };
+  }
 }

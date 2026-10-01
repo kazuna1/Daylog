@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import type { PainEvent } from "@/lib/database.types";
 import { pct, type ClippedAction, type PainPoint, type Span } from "@/lib/day";
-import { formatDuration, formatTime } from "@/lib/time";
+import { formatDay, formatDuration, formatTime } from "@/lib/time";
 import { clampViewHours, MAX_VIEW_HOURS, MIN_VIEW_HOURS, VIEW_HOURS_PRESETS } from "@/lib/view";
 import { painColor } from "@/components/pain-badge";
 
@@ -15,12 +15,25 @@ export type Target =
 /** `to` set = a dragged time range (start … end) instead of a single moment. */
 export type ContextRequest = { x: number; y: number; at: number; to?: number; target: Target | null };
 
+/** One local day inside the loaded stretch. */
+export type DayMark = { day: string; startMs: number; endMs: number };
+
+export type TimelineHandle = {
+  /** Put this instant in the middle of the view. */
+  centerOn: (ms: number, behavior?: ScrollBehavior) => void;
+  /** Move by whole days without reloading anything. */
+  shiftDays: (days: number) => void;
+};
+
 const LONG_PRESS_MS = 450;
 const HOUR = 3_600_000;
+/** Ask for more days once the edge is this close, measured in screens. */
+const EDGE_SCREENS = 0.75;
 
 export function Timeline({
   tz,
-  day,
+  span,
+  days,
   now,
   lanes,
   events,
@@ -31,21 +44,35 @@ export function Timeline({
   onContext,
   onOpen,
   onClearDay,
+  clearDayLabel,
+  onVisibleChange,
+  onNeedMore,
+  loading,
+  initialCenterMs,
+  handle,
 }: {
   tz: string;
-  day: Span;
-  /** Current time for today; null for past days. */
+  /** The whole loaded stretch, which can cover many days. */
+  span: Span;
+  days: DayMark[];
+  /** Current time, or null when today is outside the loaded stretch. */
   now: number | null;
   lanes: ClippedAction[][];
   events: PainEvent[];
   painPoints: PainPoint[];
   emojiFor: (a: ClippedAction) => string | null;
-  /** How many hours fit in the visible width. */
   viewHours: number;
   onViewHoursChange: (hours: number) => void;
   onContext: (req: ContextRequest) => void;
   onOpen: (target: Target) => void;
   onClearDay: () => void;
+  clearDayLabel: string;
+  /** Reports what is on screen so the header can follow the date. */
+  onVisibleChange: (v: { fromMs: number; toMs: number; centerMs: number }) => void;
+  onNeedMore: (side: "past" | "future") => void;
+  loading: boolean;
+  initialCenterMs: number;
+  handle: RefObject<TimelineHandle | null>;
 }) {
   const scrollerRef = useRef<HTMLDivElement>(null);
   const innerRef = useRef<HTMLDivElement>(null);
@@ -53,21 +80,20 @@ export function Timeline({
   const guideLabelRef = useRef<HTMLSpanElement>(null);
   const selectionRef = useRef<HTMLDivElement>(null);
   const selectionLabelRef = useRef<HTMLSpanElement>(null);
-  const drag = useRef<{ fromX: number; fromAt: number; moved: boolean } | null>(null);
   const press = useRef<{ timer: number; x: number; y: number; fired: boolean } | null>(null);
+  const drag = useRef<{ fromX: number; fromAt: number; moved: boolean } | null>(null);
   const lastLongPress = useRef(0);
   const viewHoursRef = useRef(viewHours);
-  // Time at the center of the view; kept when the window size or screen width changes.
   const centerRef = useRef<number | null>(null);
-  // Where an in-flight smooth pan is heading, so quick repeated clicks add up.
   const panTargetRef = useRef<number | null>(null);
+  const prevStart = useRef(span.startMs);
   const [width, setWidth] = useState(0);
   const [visible, setVisible] = useState<{ from: number; to: number } | null>(null);
 
-  const spanMs = day.endMs - day.startMs;
-  const dayHours = spanMs / HOUR;
-  const hours = Math.min(viewHours, dayHours);
-  const pxPerHour = width ? width / hours : 0;
+  const spanMs = span.endMs - span.startMs;
+  const pxPerHour = width ? width / viewHours : 0;
+  const pxPerMs = pxPerHour / HOUR;
+  const left = (ms: number) => `${((ms - span.startMs) / spanMs) * 100}%`;
 
   useEffect(() => {
     viewHoursRef.current = viewHours;
@@ -81,46 +107,61 @@ export function Timeline({
     return () => ro.disconnect();
   }, []);
 
-  function readVisible() {
-    const s = scrollerRef.current;
-    if (!s || !s.scrollWidth) return;
-    const from = day.startMs + (s.scrollLeft / s.scrollWidth) * spanMs;
-    const to = day.startMs + ((s.scrollLeft + s.clientWidth) / s.scrollWidth) * spanMs;
-    centerRef.current = (from + to) / 2;
-    if (panTargetRef.current !== null && Math.abs(panTargetRef.current - centerRef.current) < 60_000) {
-      panTargetRef.current = null;
-    }
-    setVisible({ from, to });
-  }
-
-  /** Clamp a center time so the view stays inside the day. */
-  function clampCenter(ms: number) {
-    const half = (hours / 2) * HOUR;
-    return Math.min(day.endMs - half, Math.max(day.startMs + half, ms));
-  }
-
   function scrollToCenter(ms: number, behavior: ScrollBehavior = "auto") {
     const s = scrollerRef.current;
     if (!s) return;
-    ms = clampCenter(ms);
+    const x = ((ms - span.startMs) / spanMs) * s.scrollWidth - s.clientWidth / 2;
     panTargetRef.current = behavior === "smooth" ? ms : null;
-    const x = ((ms - day.startMs) / spanMs) * s.scrollWidth - s.clientWidth / 2;
-    s.scrollTo({ left: x, behavior });
+    s.scrollTo({ left: Math.max(0, x), behavior });
   }
 
-  // Before paint, and whenever the window size or width changes: keep the same center.
-  useLayoutEffect(() => {
-    if (centerRef.current === null) {
-      // First render: put "now" a bit right of center so recent past is visible.
-      const focus = now !== null ? now - (hours / 6) * HOUR : (lanes.flat()[0]?.from ?? day.startMs + 12 * HOUR);
-      centerRef.current = focus;
+  useImperativeHandle(handle, () => ({
+    centerOn: (ms, behavior = "smooth") => scrollToCenter(ms, behavior),
+    shiftDays: (d) =>
+      scrollToCenter((panTargetRef.current ?? centerRef.current ?? span.startMs) + d * 24 * HOUR, "smooth"),
+  }));
+
+  function readVisible() {
+    const s = scrollerRef.current;
+    if (!s || !s.scrollWidth) return;
+    const from = span.startMs + (s.scrollLeft / s.scrollWidth) * spanMs;
+    const to = span.startMs + ((s.scrollLeft + s.clientWidth) / s.scrollWidth) * spanMs;
+    const center = (from + to) / 2;
+    centerRef.current = center;
+    if (panTargetRef.current !== null && Math.abs(panTargetRef.current - center) < 60_000) {
+      panTargetRef.current = null;
     }
+    setVisible({ from, to });
+    onVisibleChange({ fromMs: from, toMs: to, centerMs: center });
+
+    // Load further back or forward before the edge comes into view.
+    const edge = s.clientWidth * EDGE_SCREENS;
+    if (s.scrollLeft < edge) onNeedMore("past");
+    else if (s.scrollWidth - (s.scrollLeft + s.clientWidth) < edge) onNeedMore("future");
+  }
+
+  // First paint: centre where the page asked for.
+  useLayoutEffect(() => {
+    if (centerRef.current === null) centerRef.current = initialCenterMs;
     scrollToCenter(centerRef.current);
     readVisible();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewHours, width]);
 
-  // Vertical wheel pans the timeline; Ctrl/⌘ + wheel changes the window size.
+  // Days added on the left push everything right; keep the view where it was.
+  useLayoutEffect(() => {
+    const s = scrollerRef.current;
+    if (!s) return;
+    const added = prevStart.current - span.startMs;
+    prevStart.current = span.startMs;
+    if (added > 0 && pxPerMs > 0) {
+      s.scrollLeft += added * pxPerMs;
+      readVisible();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [span.startMs]);
+
+  // Vertical wheel pans; Ctrl/⌘ + wheel changes the window size.
   useEffect(() => {
     const s = scrollerRef.current;
     if (!s) return;
@@ -136,7 +177,7 @@ export function Timeline({
         if (next !== cur) onViewHoursChange(next);
         return;
       }
-      if (Math.abs(e.deltaY) > Math.abs(e.deltaX) && s.scrollWidth > s.clientWidth) {
+      if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
         e.preventDefault();
         s.scrollLeft += e.deltaY;
       }
@@ -146,8 +187,8 @@ export function Timeline({
   }, [onViewHoursChange]);
 
   function pan(direction: -1 | 1) {
-    const base = panTargetRef.current ?? centerRef.current ?? day.startMs;
-    scrollToCenter(base + direction * (hours / 2) * HOUR, "smooth");
+    const base = panTargetRef.current ?? centerRef.current ?? span.startMs;
+    scrollToCenter(base + direction * (viewHours / 2) * HOUR, "smooth");
   }
 
   // ← / → pan, unless you're typing or using the pain slider.
@@ -166,8 +207,8 @@ export function Timeline({
   function minuteAt(clientX: number) {
     const rect = innerRef.current!.getBoundingClientRect();
     const frac = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
-    const at = day.startMs + frac * spanMs;
-    return Math.min(Math.round(at / 60000) * 60000, day.endMs - 60000);
+    const at = span.startMs + frac * spanMs;
+    return Math.min(Math.round(at / 60000) * 60000, span.endMs - 60000);
   }
 
   function timeAt(clientX: number) {
@@ -181,18 +222,33 @@ export function Timeline({
     if (!guide || !label) return;
     const at = minuteAt(clientX);
     const future = now !== null && at > now;
-    guide.style.left = `${((at - day.startMs) / spanMs) * 100}%`;
+    guide.style.left = left(at);
     guide.style.display = "block";
     guide.style.opacity = future ? "0.45" : "1";
-    // Keep the label on screen near the edges of the visible area.
+    label.textContent = future ? `${formatTime(tz, at)} · later` : formatTime(tz, at);
     const view = scrollerRef.current!.getBoundingClientRect();
     label.style.transform =
       clientX - view.left < 48 ? "translateX(0)" : view.right - clientX < 48 ? "translateX(-100%)" : "translateX(-50%)";
-    label.textContent = future ? `${formatTime(tz, at)} · later` : formatTime(tz, at);
   }
 
   function hideGuide() {
     if (guideRef.current) guideRef.current.style.display = "none";
+  }
+
+  function paintSelection(a: number, b: number) {
+    const box = selectionRef.current;
+    const label = selectionLabelRef.current;
+    if (!box || !label) return;
+    const [from, to] = a <= b ? [a, b] : [b, a];
+    box.style.display = "block";
+    box.style.left = left(from);
+    box.style.width = `${((to - from) / spanMs) * 100}%`;
+    label.textContent = `${formatTime(tz, from)} – ${formatTime(tz, to)} · ${formatDuration(to - from)}`;
+  }
+
+  function clearSelection() {
+    if (selectionRef.current) selectionRef.current.style.display = "none";
+    drag.current = null;
   }
 
   function targetOf(el: EventTarget | null): Target | null {
@@ -203,22 +259,6 @@ export function Timeline({
 
   function openAt(clientX: number, clientY: number, el: EventTarget | null) {
     onContext({ x: clientX, y: clientY, at: timeAt(clientX), target: targetOf(el) });
-  }
-
-  function paintSelection(a: number, b: number) {
-    const box = selectionRef.current;
-    const label = selectionLabelRef.current;
-    if (!box || !label) return;
-    const [from, to] = a <= b ? [a, b] : [b, a];
-    box.style.display = "block";
-    box.style.left = `${((from - day.startMs) / spanMs) * 100}%`;
-    box.style.width = `${((to - from) / spanMs) * 100}%`;
-    label.textContent = `${formatTime(tz, from)} – ${formatTime(tz, to)} · ${formatDuration(to - from)}`;
-  }
-
-  function clearSelection() {
-    if (selectionRef.current) selectionRef.current.style.display = "none";
-    drag.current = null;
   }
 
   const pointerHandlers = {
@@ -295,12 +335,23 @@ export function Timeline({
     },
   };
 
-  // Tick density follows how many pixels an hour gets.
+  // Ticks are built for what is on screen plus a screen either side, so weeks of
+  // loaded days stay cheap to render.
   const tickMinutes = pxPerHour >= 240 ? 15 : pxPerHour >= 90 ? 30 : 60;
   const labelEvery = pxPerHour >= 120 ? tickMinutes : pxPerHour >= 30 ? 60 : pxPerHour >= 15 ? 120 : 180;
-  const totalMinutes = Math.round(dayHours * 60);
-  const ticks = Array.from({ length: Math.floor(totalMinutes / tickMinutes) + 1 }, (_, i) => i * tickMinutes);
-  const left = (m: number) => `${((m * 60000) / spanMs) * 100}%`;
+  const screen = visible ? visible.to - visible.from : viewHours * HOUR;
+  const windowFrom = (visible?.from ?? span.startMs) - screen;
+  const windowTo = (visible?.to ?? span.startMs + screen) + screen;
+  const step = tickMinutes * 60_000;
+  const ticks: number[] = [];
+  for (
+    let t = Math.max(span.startMs, Math.ceil(windowFrom / step) * step);
+    t <= Math.min(span.endMs, windowTo);
+    t += step
+  ) {
+    ticks.push(t);
+  }
+  const visibleDays = days.filter((d) => d.endMs > windowFrom && d.startMs < windowTo);
 
   return (
     <div className="flex h-full flex-col gap-1.5">
@@ -310,9 +361,10 @@ export function Timeline({
         viewHours={viewHours}
         isLive={now !== null}
         onPan={pan}
-        onNow={() => now !== null && scrollToCenter(now - (hours / 6) * HOUR, "smooth")}
+        onNow={() => now !== null && scrollToCenter(now - (viewHours / 6) * HOUR, "smooth")}
         onViewHoursChange={onViewHoursChange}
         onClearDay={onClearDay}
+        clearDayLabel={clearDayLabel}
       />
       <div
         ref={scrollerRef}
@@ -322,38 +374,44 @@ export function Timeline({
         <div
           ref={innerRef}
           className="relative flex h-full touch-pan-x flex-col overflow-x-clip select-none"
-          style={{ width: `${(dayHours / hours) * 100}%` }}
+          style={{ width: `${(spanMs / HOUR / viewHours) * 100}%` }}
           {...pointerHandlers}
         >
-          {/* grid */}
+          {/* hour grid */}
           <div aria-hidden className="pointer-events-none absolute inset-0">
-            {ticks.filter((m) => m > 0 && m < totalMinutes).map((m) => (
+            {ticks.map((t) => (
               <div
-                key={m}
+                key={t}
                 className={`absolute top-6 bottom-0 border-l ${
-                  m % 360 === 0 ? "border-line" : m % 60 === 0 ? "border-line/60" : "border-dashed border-line/40"
+                  t % HOUR === 0 ? "border-line/60" : "border-dashed border-line/40"
                 }`}
-                style={{ left: left(m) }}
+                style={{ left: left(t) }}
               />
+            ))}
+            {/* midnight, where one day becomes the next */}
+            {visibleDays.map((d) => (
+              <div key={d.day} className="absolute top-0 bottom-0 border-l-2 border-line" style={{ left: left(d.startMs) }} />
             ))}
           </div>
 
-          {/* ruler */}
+          {/* ruler: the day's name, then the hours */}
           <div className="relative h-6 shrink-0 border-b border-line text-[10px] text-muted tabular-nums">
+            {visibleDays.map((d) => (
+              <span
+                key={d.day}
+                className="absolute top-0.5 pl-1.5 text-[10px] font-semibold tracking-wide text-ink/70 uppercase"
+                style={{ left: left(d.startMs) }}
+              >
+                {formatDay(d.day)}
+              </span>
+            ))}
             {ticks
-              .filter((m) => m % labelEvery === 0 && m < totalMinutes)
-              .map((m) => {
-                const label = formatTime(tz, day.startMs + m * 60000);
-                return (
-                  <span
-                    key={m}
-                    className={`absolute top-1.5 pl-1 ${m % 60 === 0 ? "" : "opacity-60"}`}
-                    style={{ left: left(m) }}
-                  >
-                    {labelEvery < 60 ? label : label.slice(0, 2)}
-                  </span>
-                );
-              })}
+              .filter((t) => Math.round((t - span.startMs) / 60_000) % labelEvery === 0)
+              .map((t) => (
+                <span key={t} className="absolute bottom-0 pl-1 opacity-70" style={{ left: left(t) }}>
+                  {formatTime(tz, t)}
+                </span>
+              ))}
           </div>
 
           {/* action lanes */}
@@ -362,7 +420,7 @@ export function Timeline({
             {lanes.map((lane, i) => (
               <div key={i} className="relative min-h-8 flex-1" style={{ maxHeight: "3.75rem" }}>
                 {lane.map((a) => (
-                  <ActionBlock key={a.id} tz={tz} a={a} day={day} emoji={emojiFor(a)} />
+                  <ActionBlock key={a.id} tz={tz} a={a} span={span} emoji={emojiFor(a)} />
                 ))}
               </div>
             ))}
@@ -379,7 +437,7 @@ export function Timeline({
                 data-id={e.id}
                 title={`${formatTime(tz, e.occurred_at)} · ${e.name}${e.intensity != null ? ` · ${e.intensity}/10` : ""}`}
                 className="absolute top-1/2 grid h-7 min-w-7 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full border-2 border-surface px-1 text-[11px] font-bold text-white shadow-sm"
-                style={{ left: `${pct(new Date(e.occurred_at).getTime(), day)}%`, background: e.color }}
+                style={{ left: `${pct(new Date(e.occurred_at).getTime(), span)}%`, background: e.color }}
               >
                 {e.intensity ?? "!"}
               </button>
@@ -389,7 +447,7 @@ export function Timeline({
           {/* pain level line */}
           <div className="relative min-h-24 flex-[3] border-t border-line">
             <LaneLabel>Pain level</LaneLabel>
-            <PainLine points={painPoints} day={day} until={now ?? day.endMs} tz={tz} />
+            <PainLine points={painPoints} span={span} until={now ?? span.endMs} tz={tz} />
           </div>
 
           {/* now marker */}
@@ -397,7 +455,7 @@ export function Timeline({
             <div
               aria-hidden
               className="pointer-events-none absolute top-0 bottom-0 z-10 w-0 border-l-2 border-[var(--pain-max)]"
-              style={{ left: `${pct(now, day)}%` }}
+              style={{ left: left(now) }}
             >
               <span className="absolute -top-0 -left-[5px] h-2.5 w-2.5 rounded-full bg-[var(--pain-max)]" />
             </div>
@@ -431,6 +489,12 @@ export function Timeline({
             />
           </div>
         </div>
+
+        {loading && (
+          <span className="pointer-events-none absolute top-1/2 left-2 z-30 -translate-y-1/2 rounded-full bg-surface/90 px-2 py-1 text-[11px] text-muted shadow">
+            loading…
+          </span>
+        )}
       </div>
     </div>
   );
@@ -445,6 +509,7 @@ function Toolbar({
   onNow,
   onViewHoursChange,
   onClearDay,
+  clearDayLabel,
 }: {
   tz: string;
   visible: { from: number; to: number } | null;
@@ -454,6 +519,7 @@ function Toolbar({
   onNow: () => void;
   onViewHoursChange: (hours: number) => void;
   onClearDay: () => void;
+  clearDayLabel: string;
 }) {
   const [open, setOpen] = useState(false);
   const [custom, setCustom] = useState(String(viewHours));
@@ -496,8 +562,8 @@ function Toolbar({
       <button
         className={`${btn} ml-auto text-muted hover:text-red-600`}
         onClick={onClearDay}
-        title="Erase this day"
-        aria-label="Erase this day"
+        title={`Erase ${clearDayLabel}`}
+        aria-label={`Erase ${clearDayLabel}`}
       >
         <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} aria-hidden>
           <path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13" strokeLinecap="round" strokeLinejoin="round" />
@@ -568,7 +634,7 @@ function Toolbar({
               <button className="btn-primary ml-auto px-3 py-1.5 text-xs">Set</button>
             </form>
             <p className="mt-3 text-[11px] leading-snug text-muted">
-              Move with ‹ ›, arrow keys, scrolling or swiping. Ctrl + scroll zooms.
+              Keep scrolling sideways and earlier days load on their own. Ctrl + scroll zooms.
             </p>
           </div>
         )}
@@ -579,7 +645,7 @@ function Toolbar({
 
 function LaneLabel({ children }: { children: React.ReactNode }) {
   return (
-    <span className="pointer-events-none sticky left-2 z-[1] -mb-4 block w-max px-2 text-[10px] font-semibold tracking-wider text-muted/80 uppercase">
+    <span className="pointer-events-none sticky left-2 z-[4] -mb-4 block w-max rounded bg-surface-1/80 px-1.5 py-px text-[10px] font-semibold tracking-wider text-muted/80 uppercase backdrop-blur-[2px]">
       {children}
     </span>
   );
@@ -588,16 +654,16 @@ function LaneLabel({ children }: { children: React.ReactNode }) {
 function ActionBlock({
   tz,
   a,
-  day,
+  span,
   emoji,
 }: {
   tz: string;
   a: ClippedAction;
-  day: Span;
+  span: Span;
   emoji: string | null;
 }) {
-  const left = pct(a.from, day);
-  const width = Math.max(pct(a.to, day) - left, 0.35);
+  const start = pct(a.from, span);
+  const width = Math.max(pct(a.to, span) - start, 0.05);
   const duration = new Date(a.ended_at ?? a.to).getTime() - new Date(a.started_at).getTime();
   const label = `${emoji ? `${emoji} ` : ""}${a.name}`;
   return (
@@ -617,7 +683,7 @@ function ActionBlock({
       className={`absolute inset-y-0 flex items-center overflow-hidden rounded-lg px-1.5 text-left text-xs font-medium text-white shadow-sm ${
         a.active ? "action-active" : ""
       }`}
-      style={{ left: `${left}%`, width: `${width}%`, backgroundColor: a.color }}
+      style={{ left: `${start}%`, width: `${width}%`, backgroundColor: a.color }}
     >
       <span className="truncate">
         {label}
@@ -629,12 +695,12 @@ function ActionBlock({
 
 function PainLine({
   points,
-  day,
+  span,
   until,
   tz,
 }: {
   points: PainPoint[];
-  day: Span;
+  span: Span;
   until: number;
   tz: string;
 }) {
@@ -645,7 +711,7 @@ function PainLine({
       </p>
     );
   }
-  const X = (ms: number) => pct(ms, day) * 10; // viewBox 0..1000
+  const X = (ms: number) => pct(ms, span) * 10; // viewBox 0..1000
   const Y = (level: number) => 96 - level * 9; // viewBox 0..100, 10 → 6
   const endX = X(Math.max(until, points.at(-1)!.at));
 
@@ -674,10 +740,26 @@ function PainLine({
           </linearGradient>
         </defs>
         {[2, 5, 8].map((l) => (
-          <line key={l} x1="0" x2="1000" y1={Y(l)} y2={Y(l)} stroke="var(--line)" strokeDasharray="4 6" vectorEffect="non-scaling-stroke" />
+          <line
+            key={l}
+            x1="0"
+            x2="1000"
+            y1={Y(l)}
+            y2={Y(l)}
+            stroke="var(--line)"
+            strokeDasharray="4 6"
+            vectorEffect="non-scaling-stroke"
+          />
         ))}
         <path d={area} fill="url(#pain-grad)" opacity="0.18" />
-        <path d={d} fill="none" stroke="url(#pain-grad)" strokeWidth="2.5" vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
+        <path
+          d={d}
+          fill="none"
+          stroke="url(#pain-grad)"
+          strokeWidth="2.5"
+          vectorEffect="non-scaling-stroke"
+          strokeLinejoin="round"
+        />
       </svg>
       <div className="absolute inset-x-0 top-4 bottom-1">
         {points
@@ -691,7 +773,7 @@ function PainLine({
               title={`${formatTime(tz, p.at)} · pain ${p.level}`}
               className="absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-surface"
               style={{
-                left: `${pct(p.at, day)}%`,
+                left: `${pct(p.at, span)}%`,
                 top: `${Y(p.level)}%`,
                 background: painColor(p.level),
               }}

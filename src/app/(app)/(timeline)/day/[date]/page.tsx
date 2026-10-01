@@ -1,9 +1,10 @@
 import { notFound, redirect } from "next/navigation";
 import { DayView } from "@/components/day/day-view";
-import { loadDay } from "@/lib/day-data";
+import { loadTimeline } from "@/lib/day-data";
 import { isDay, localDay } from "@/lib/time";
 import { getTz, getViewHours, requestNow } from "@/lib/tz";
 
+/** Deep link to a past day: the same endless strip, opened on that day. */
 export default async function DayPage({ params }: PageProps<"/day/[date]">) {
   const { date } = await params;
   if (!isDay(date)) notFound();
@@ -14,6 +15,6 @@ export default async function DayPage({ params }: PageProps<"/day/[date]">) {
   if (date === today) redirect("/");
   if (date > today) notFound();
 
-  const data = await loadDay(tz, date);
-  return <DayView key={date} data={data} tz={tz} isToday={false} serverNow={now} viewHours={viewHours} />;
+  const data = await loadTimeline(tz, date);
+  return <DayView key={date} data={data} tz={tz} focusDay={date} serverNow={now} viewHours={viewHours} />;
 }

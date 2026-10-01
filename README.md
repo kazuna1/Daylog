@@ -8,18 +8,18 @@ Personal day timeline for back pain. Log what you do (with start/end), how your 
 
 - **Today** (`/`) — one screen for the whole day
   - **Sky** (top): time-of-day colors, sun/moon position, clock, weather (Open-Meteo), running actions with an **End** button
-  - **Timeline** (~60%): 00–24h. Action lanes → pain events → pain level line
+  - **Timeline** (~60%): one endless strip, not a page per day. Action lanes → pain events → pain level line. Scroll sideways and it just keeps going: midnight is a dashed separator with the day's name on the ruler, and the sky title, clock and colours follow whatever day is under the middle of the screen. Earlier days load on their own as you approach the edge (three at a time, up to 90 back; it never scrolls past tomorrow)
   - **View window**: the clock button above the timeline sets how many hours are visible (2–24h presets or custom). Move with ‹ › / Now, arrow keys, scroll or swipe; Ctrl + scroll zooms. Saved per device (`view_hours` cookie)
   - **Hover** (or long-press on touch) shows the exact HH:MM under the cursor — the same time a right-click will use
   - **Pain glider** (bottom): move it when your pain changes; it records a reading and the line holds that level until the next one
   - **Two ways to log an action**
     - *Live*: **▶ Start** → pick the action → it runs until you press **End** (header chip, or right-click → End here)
     - *With stamps*: **drag across the timeline** to select a range, then pick the action — or **+ Add…** to type start and end in a form (best on a phone, where dragging pans)
-  - **Day stepper** in the sky header: ‹ arrow, the day's name, › arrow (inert on today), plus a Today jump when you are in the past
+  - **Day stepper** in the sky header: ‹ arrow, the day's name, › arrow, plus a Today jump when you have drifted away. The arrows scroll the strip by a day — nothing navigates, nothing reloads, so the timer and the pain glider keep running while you look at last Tuesday
   - **Right-click / long-press** anywhere on the timeline, in three groups — **Activities**, **Exercises** (prefilled sets/reps/weight/rest, adjust what you did) and **Pain events**: start an action at that time, end a running one **here or at a time you type** (for actions you forgot to end), set pain level, or add a pain event. Click a block to edit start/end, effort, pain and notes
   - **Timer field** (replaces a pomodoro app): tap a task to start it — it ends the previous one and logs straight to the timeline. With a threshold the timer counts **down** (30:00 → 00:00) and then straight into minus (-02:22) — it never stops; without one it counts **up** from zero. Notifications are opt-in per activity: tick **Notify after** to enable the minutes field; left off, the activity just runs and logs (browser notification + beep + the panel turns red, repeating every 5 min). The **browser tab title** shows the live countdown (`29:58 · 🪑 Sitting`, or `⏰ +02:08 · 🚶 Walk` once over), so you can read it without switching back to the tab. The running task also takes a **pain 0–10** and a note, so you can record "sitting = 7, walking = 3"
   - **Left running by mistake**: an action running longer than 12 h shows a warning on the timer bar with **Fix the end time**, which opens the end form with +15m … +8h presets measured from the start
-  - **Erase day** (trash icon above the timeline): deletes every action, pain reading and pain event of that day after a yes/no confirmation
+  - **Erase day** (trash icon above the timeline): deletes every action, pain reading and pain event of the day you are looking at — it names that day and counts its rows — after a yes/no confirmation
   - At midnight the page rolls over to a fresh, empty day
 - **All days** (`/days`) — **7d**: seven tall day columns with stats · **30d**: a calendar (7 weekday columns, Monday first) where each square shows that day's actions across 00→24 and its pain bar · **90d**: three 30-day calendar cards in one row. Hover a day for its summary; click to open it (`/day/YYYY-MM-DD`)
 - **Notes** (`/notes`) — free notes with no time attached: patterns you notice, things to try, questions for the doctor. Write, edit, pin to the top, delete (asks first); search appears past five notes. Notes about a specific moment stay on the timeline (on an activity, an exercise or a pain event) — built and working, but currently has no tab: reachable by URL until you decide where it belongs
@@ -89,6 +89,7 @@ Migrations live in `supabase/migrations/`. After changing the schema, update `sr
 
 - Sessions: the proxy renews the Supabase session. When it does, it answers that page load with a 307 to the same URL carrying the fresh cookies, so the page never renders with the token the browser sent (already expired) — that race was the "error, then it works after a reload" on the first visit of the day. A `daylog_renewed` cookie (10 s) makes a loop impossible.
 - Timeline changes are optimistic: they show instantly and save in the background (rolled back with an error toast if the save fails). Ids are generated in the browser so the saved row matches what you see.
+- The strip holds a range of days, not one day. The page renders three days back and one ahead (`RANGE_BEFORE`/`RANGE_AFTER` in `src/lib/day-data.ts`); scrolling within 0.75 screens of either edge calls the `fetchEntries` server action for three more and splices them in. When days are added on the left the scroller compensates `scrollLeft` in a layout effect, so the view does not jump. Ticks and labels are only built for the visible window ± one screen, so a 90-day strip costs the same to draw as one day.
 - Each change is one database round trip (~130 ms to Seoul).
 - `vercel.json` pins the server to **Seoul (`icn1`)**, next to the database. Without it Vercel runs in the US and every query crosses the Pacific.
 - `npm run dev` is slower than the real thing (compiles on demand). To feel real speed locally: `npm run build && npm start`.

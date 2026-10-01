@@ -1,15 +1,13 @@
 "use client";
 
-import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import type { DayData } from "@/lib/day-data";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { TimelineData } from "@/lib/day-data";
 import { clipActions, packLanes, painSeries, type PainPoint } from "@/lib/day";
-import { addDays, formatDay, formatDuration, formatTime, localDay, minutesOfDay } from "@/lib/time";
+import { addDays, dayBoundsMs, formatDay, formatDuration, formatTime, localDay, minutesOfDay } from "@/lib/time";
 import { useDayState } from "./use-day-state";
-import { removeTimerTask, saveTimerTask } from "@/app/(app)/timeline-actions";
+import { fetchEntries, removeTimerTask, saveTimerTask } from "@/app/(app)/timeline-actions";
 import { Sky } from "./sky";
-import { Timeline, type ContextRequest, type Target } from "./timeline";
+import { Timeline, type ContextRequest, type DayMark, type Target, type TimelineHandle } from "./timeline";
 import { saveViewHours } from "@/lib/view";
 import { ContextMenu, type MenuHandlers } from "./context-menu";
 import { ActionSheet, EndActionSheet, ExerciseSheet, NewActionSheet, PainEventSheet } from "./sheets";
@@ -18,17 +16,26 @@ import { PainBar } from "./pain-bar";
 import { TimerField } from "./timer-field";
 
 const TICK_MS = 20_000;
+/** Days added each time you scroll near an edge. */
+const EXTEND_BY = 3;
+/** Stop growing the strip here; All days is the way to jump further. */
+const MAX_DAYS = 90;
+
+function daysApart(from: string, to: string) {
+  return Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000);
+}
 
 export function DayView({
   data,
   tz,
-  isToday,
+  focusDay: initialFocusDay,
   serverNow,
   viewHours: initialViewHours,
 }: {
-  data: DayData;
+  data: TimelineData;
   tz: string;
-  isToday: boolean;
+  /** The day the page was opened on. */
+  focusDay: string;
   serverNow: number;
   viewHours: number;
 }) {
@@ -36,44 +43,104 @@ export function DayView({
   const [menu, setMenu] = useState<ContextRequest | null>(null);
   const [sheet, setSheet] = useState<Target | null>(null);
   const [viewHours, setViewHours] = useState(initialViewHours);
-  const changeViewHours = useCallback((h: number) => {
-    setViewHours(h);
-    saveViewHours(h);
-  }, []);
   const [draft, setDraft] = useState<{ level: number; at: number } | null>(null);
-  // Manual logging form and the erase-day confirmation.
   const [manual, setManual] = useState<{ from: number; to: number | null } | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
-  // Ending a forgotten action at a time typed by hand.
   const [ending, setEnding] = useState<{ id: string; at: number } | null>(null);
-  // Logging an exercise from the library at a given time.
   const [loggingExercise, setLoggingExercise] = useState<{ id: string; at: number } | null>(null);
-  const { entries, ops, call, pending, error, clearError } = useDayState(data);
 
-  const router = useRouter();
+  // The stretch of days currently loaded, and the day the view is centred on.
+  const [range, setRange] = useState({ fromDay: data.fromDay, toDay: data.toDay });
+  const [lastData, setLastData] = useState(data);
+  if (data !== lastData) {
+    setLastData(data);
+    setRange({ fromDay: data.fromDay, toDay: data.toDay });
+  }
+  const [focusDay, setFocusDay] = useState(initialFocusDay);
+  const [loading, setLoading] = useState(false);
+  const rangeRef = useRef(range);
+  const busy = useRef(false);
+  const timeline = useRef<TimelineHandle | null>(null);
 
-  // Tick the clock; when midnight passes, reload so Today starts empty.
   useEffect(() => {
-    if (!isToday) return;
+    rangeRef.current = range;
+  }, [range]);
+
+  const reload = useCallback(async () => {
+    const res = await fetchEntries(rangeRef.current);
+    return res.data ?? null;
+  }, []);
+
+  const { entries, ops, call, replace, pending, error, clearError } = useDayState(
+    useMemo(() => ({ actions: data.actions, levels: data.levels, events: data.events }), [data]),
+    reload,
+  );
+
+  const todayKey = localDay(tz, new Date(now));
+  const span = useMemo(
+    () => ({ startMs: dayBoundsMs(tz, range.fromDay).start, endMs: dayBoundsMs(tz, range.toDay).end }),
+    [tz, range.fromDay, range.toDay],
+  );
+  const days: DayMark[] = useMemo(() => {
+    const out: DayMark[] = [];
+    for (let d = range.fromDay; d <= range.toDay; d = addDays(d, 1)) {
+      const { start, end } = dayBoundsMs(tz, d);
+      out.push({ day: d, startMs: start, endMs: end });
+    }
+    return out;
+  }, [tz, range.fromDay, range.toDay]);
+
+  /** Scrolled near an edge: pull in more days and keep the view where it is. */
+  const needMore = useCallback(
+    async (side: "past" | "future") => {
+      if (busy.current) return;
+      const cur = rangeRef.current;
+      const today = localDay(tz, new Date());
+      const next =
+        side === "past"
+          ? { ...cur, fromDay: addDays(cur.fromDay, -EXTEND_BY) }
+          : { ...cur, toDay: addDays(cur.toDay, EXTEND_BY) };
+
+      if (side === "past" && daysApart(next.fromDay, cur.toDay) > MAX_DAYS) return;
+      // Never load past tomorrow — there is nothing logged in the future.
+      if (side === "future" && cur.toDay >= addDays(today, 1)) return;
+      if (side === "future" && next.toDay > addDays(today, 1)) next.toDay = addDays(today, 1);
+
+      busy.current = true;
+      setLoading(true);
+      const res = await fetchEntries(next);
+      if (res.data) {
+        setRange(next);
+        replace(res.data);
+      }
+      busy.current = false;
+      setLoading(false);
+    },
+    [tz, replace],
+  );
+
+  // Tick the clock, and roll the strip forward when midnight passes.
+  useEffect(() => {
     const id = setInterval(() => {
       const t = Date.now();
       setNow(t);
-      if (localDay(tz, new Date(t)) !== data.day) router.refresh();
+      const today = localDay(tz, new Date(t));
+      if (today > rangeRef.current.toDay) needMore("future");
     }, TICK_MS);
     return () => clearInterval(id);
-  }, [isToday, tz, data.day, router]);
+  }, [tz, needMore]);
 
-  // Pick up entries logged from another device when coming back to the tab.
+  // Pick up entries logged on another device when you come back to the tab.
   useEffect(() => {
-    const onVisible = () => {
-      if (document.visibilityState === "visible") {
-        setNow(Date.now());
-        router.refresh();
-      }
+    const onVisible = async () => {
+      if (document.visibilityState !== "visible") return;
+      setNow(Date.now());
+      const fresh = await reload();
+      if (fresh) replace(fresh);
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => document.removeEventListener("visibilitychange", onVisible);
-  }, [router]);
+  }, [reload, replace]);
 
   useEffect(() => {
     if (!error) return;
@@ -81,14 +148,20 @@ export function DayView({
     return () => clearTimeout(id);
   }, [error, clearError]);
 
-  const span = useMemo(() => ({ startMs: data.startMs, endMs: data.endMs }), [data.startMs, data.endMs]);
-  const liveNow = isToday ? now : null;
+  const changeViewHours = useCallback((h: number) => {
+    setViewHours(h);
+    saveViewHours(h);
+  }, []);
+
   const { actions, events } = entries;
-  const clipped = useMemo(() => clipActions(actions, span, isToday ? now : span.endMs), [actions, span, now, isToday]);
+  const clipped = useMemo(() => clipActions(actions, span, now), [actions, span, now]);
   const lanes = useMemo(() => packLanes(clipped, 2), [clipped]);
   // While the glider moves, show the new level live before it is saved.
   const levels = useMemo(
-    () => (draft ? [...entries.levels, { id: "draft", level: draft.level, recorded_at: new Date(draft.at).toISOString() }] : entries.levels),
+    () =>
+      draft
+        ? [...entries.levels, { id: "draft", level: draft.level, recorded_at: new Date(draft.at).toISOString() }]
+        : entries.levels,
     [entries.levels, draft],
   );
   const painPoints: PainPoint[] = useMemo(() => painSeries(levels, span), [levels, span]);
@@ -98,16 +171,35 @@ export function DayView({
   const emojiFor = useCallback(
     (a: { type_id: string | null; exercise_id?: string | null }) =>
       (a.type_id ? typeById.get(a.type_id)?.emoji : null) ??
-      (a.exercise_id ? exerciseById.get(a.exercise_id)?.emoji ?? "🏋️" : null) ??
+      (a.exercise_id ? (exerciseById.get(a.exercise_id)?.emoji ?? "🏋️") : null) ??
       null,
     [typeById, exerciseById],
   );
   const running = actions.filter((a) => a.ended_at === null);
-  // The timer field follows the most recently started running action.
-  const current = running.length
-    ? running.reduce((a, b) => (a.started_at >= b.started_at ? a : b))
-    : null;
-  const savedPain = painSeries(entries.levels, span).at(-1)?.level ?? null;
+  const current = running.length ? running.reduce((a, b) => (a.started_at >= b.started_at ? a : b)) : null;
+  const savedPain =
+    entries.levels.filter((l) => new Date(l.recorded_at).getTime() <= now).at(-1)?.level ?? null;
+
+  const focusIsToday = focusDay === todayKey;
+  const focusBounds = useMemo(() => dayBoundsMs(tz, focusDay), [tz, focusDay]);
+  const focusLabel = focusIsToday ? "today" : formatDay(focusDay);
+
+  /** Entries that belong to the day being erased, for the confirmation. */
+  const inFocusDay = useMemo(() => {
+    const inside = (iso: string) => {
+      const t = new Date(iso).getTime();
+      return t >= focusBounds.start && t < focusBounds.end;
+    };
+    return {
+      actions: actions.filter(
+        (a) =>
+          new Date(a.started_at).getTime() < focusBounds.end &&
+          (a.ended_at === null || new Date(a.ended_at).getTime() > focusBounds.start),
+      ).length,
+      levels: entries.levels.filter((l) => inside(l.recorded_at)).length,
+      events: events.filter((e) => inside(e.occurred_at)).length,
+    };
+  }, [actions, entries.levels, events, focusBounds]);
 
   /** An end timer ran out: close the action, and start whatever follows it. */
   function autoEnd(at: number, nextTypeId: string | null) {
@@ -152,7 +244,9 @@ export function DayView({
     if (!t) return null;
     if (t.kind === "action") {
       const a = actions.find((x) => x.id === t.id);
-      return a ? `${emojiFor(a) ?? ""} ${a.name} · ${formatTime(tz, a.started_at)}–${a.ended_at ? formatTime(tz, a.ended_at) : "now"}` : null;
+      return a
+        ? `${emojiFor(a) ?? ""} ${a.name} · ${formatTime(tz, a.started_at)}–${a.ended_at ? formatTime(tz, a.ended_at) : "now"}`
+        : null;
     }
     if (t.kind === "event") {
       const e = events.find((x) => x.id === t.id);
@@ -170,109 +264,93 @@ export function DayView({
   const sheetAction = sheet?.kind === "action" ? actions.find((a) => a.id === sheet.id) : null;
   const sheetEvent = sheet?.kind === "event" ? events.find((e) => e.id === sheet.id) : null;
 
-  const skyMinute = isToday ? minutesOfDay(tz, new Date(now)) : 13 * 60;
-  const todayKey = localDay(tz, new Date(now));
-  const prevDay = addDays(data.day, -1);
-  const nextDay = addDays(data.day, 1);
+  const stepperBtn =
+    "grid h-10 w-10 shrink-0 place-items-center rounded-full bg-black/20 text-xl leading-none backdrop-blur transition hover:bg-black/35";
 
   return (
     <div className="mx-auto flex h-[calc(100dvh-3.5rem)] w-full max-w-[1600px] flex-col gap-3 px-3 pt-1 pb-3 sm:px-5">
-      {/* top ~25%: sky */}
+      {/* top: sky, following whichever day is on screen */}
       <div className="h-[20%] max-h-56 min-h-32 shrink-0">
         <Sky
-          minuteOfDay={skyMinute}
-          live={isToday}
-          clock={isToday ? formatTime(tz, now) : formatDay(data.day, { weekday: "long" })}
-          dateLabel={isToday ? formatDay(data.day, { weekday: "long", month: "long" }) : String(new Date(data.startMs).getUTCFullYear())}
+          minuteOfDay={focusIsToday ? minutesOfDay(tz, new Date(now)) : 13 * 60}
+          live={focusIsToday}
+          clock={focusIsToday ? formatTime(tz, now) : formatDay(focusDay, { weekday: "long" })}
+          dateLabel={formatDay(focusDay, { weekday: "long", month: "long" })}
         >
           <div className="flex flex-wrap items-center gap-2">
-            {isToday
-              ? running.map((a) => (
-                  <span key={a.id} className="flex items-center gap-2 rounded-full bg-black/20 py-1 pr-1 pl-3 text-sm backdrop-blur">
-                    <span className="h-2 w-2 animate-pulse rounded-full" style={{ background: a.color }} />
-                    {emojiFor(a)} {a.name}
-                    <span className="tabular-nums opacity-80">{formatDuration(now - new Date(a.started_at).getTime())}</span>
-                    <button
-                      onClick={() => ops.endAction(a.id, Date.now())}
-                      className="rounded-full bg-white/90 px-2.5 py-0.5 text-xs font-semibold text-black"
-                    >
-                      End
-                    </button>
-                  </span>
-                ))
-              : null}
+            {running.map((a) => (
+              <span
+                key={a.id}
+                className="flex items-center gap-2 rounded-full bg-black/20 py-1 pr-1 pl-3 text-sm backdrop-blur"
+              >
+                <span className="h-2 w-2 animate-pulse rounded-full" style={{ background: a.color }} />
+                {emojiFor(a)} {a.name}
+                <span className="tabular-nums opacity-80">{formatDuration(now - new Date(a.started_at).getTime())}</span>
+                <button
+                  onClick={() => ops.endAction(a.id, Date.now())}
+                  className="rounded-full bg-white/90 px-2.5 py-0.5 text-xs font-semibold text-black"
+                >
+                  End
+                </button>
+              </span>
+            ))}
           </div>
 
+          {/* The strip scrolls through days on its own; these just jump a day at a time. */}
           <div className="mt-2 flex items-center gap-2">
-            <Link
-              href={`/day/${prevDay}`}
-              aria-label="Previous day"
-              title="Previous day"
-              className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-black/20 text-xl leading-none backdrop-blur transition hover:bg-black/35"
-            >
+            <button onClick={() => timeline.current?.shiftDays(-1)} aria-label="Previous day" title="Previous day" className={stepperBtn}>
               ‹
-            </Link>
+            </button>
 
             <span className="rounded-full bg-black/20 px-4 py-2 text-base font-semibold whitespace-nowrap backdrop-blur">
-              {isToday ? "Today" : formatDay(data.day)}
+              {focusIsToday ? "Today" : formatDay(focusDay)}
             </span>
 
-            {isToday ? (
-              <span
-                aria-hidden
-                className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-black/10 text-xl leading-none opacity-30"
-              >
+            {focusIsToday ? (
+              <span aria-hidden className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-black/10 text-xl leading-none opacity-30">
                 ›
               </span>
             ) : (
-              <Link
-                href={nextDay >= todayKey ? "/" : `/day/${nextDay}`}
-                aria-label="Next day"
-                title="Next day"
-                className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-black/20 text-xl leading-none backdrop-blur transition hover:bg-black/35"
-              >
+              <button onClick={() => timeline.current?.shiftDays(1)} aria-label="Next day" title="Next day" className={stepperBtn}>
                 ›
-              </Link>
+              </button>
             )}
 
-            {!isToday && (
-              <Link
-                href="/"
+            {!focusIsToday && (
+              <button
+                onClick={() => timeline.current?.centerOn(now - (viewHours / 6) * 3_600_000)}
                 className="rounded-full bg-white/85 px-3 py-2 text-sm font-semibold text-black transition hover:bg-white"
               >
                 Today
-              </Link>
+              </button>
             )}
           </div>
         </Sky>
       </div>
 
-      {isToday && (
-        <TimerField
-          tz={tz}
-          types={data.actionTypes}
-          running={current}
-          now={now}
-          onSwitch={(type) => ops.switchTask(type, Date.now(), current?.id ?? null)}
-          onStop={() => current && ops.endAction(current.id, Date.now())}
-          onAutoEnd={autoEnd}
-          onFixEnd={() =>
-            current && setEnding({ id: current.id, at: new Date(current.started_at).getTime() + 3_600_000 })
-          }
-          onPain={(pain) => current && ops.setPain(current.id, pain)}
-          onNotes={(notes) => current && ops.setNotes(current.id, notes)}
-          onSaveTask={(v) => call(() => saveTimerTask(v))}
-          onRemoveTask={(id) => call(() => removeTimerTask(id))}
-          pending={pending}
-        />
-      )}
+      <TimerField
+        tz={tz}
+        types={data.actionTypes}
+        running={current}
+        now={now}
+        onSwitch={(type) => ops.switchTask(type, Date.now(), current?.id ?? null)}
+        onStop={() => current && ops.endAction(current.id, Date.now())}
+        onAutoEnd={autoEnd}
+        onFixEnd={() => current && setEnding({ id: current.id, at: new Date(current.started_at).getTime() + 3_600_000 })}
+        onPain={(pain) => current && ops.setPain(current.id, pain)}
+        onNotes={(notes) => current && ops.setNotes(current.id, notes)}
+        onSaveTask={(v) => call(() => saveTimerTask(v))}
+        onRemoveTask={(id) => call(() => removeTimerTask(id))}
+        pending={pending}
+      />
 
-      {/* ~60%: timeline */}
+      {/* the continuous strip */}
       <div className="relative min-h-0 flex-1">
         <Timeline
           tz={tz}
-          day={span}
-          now={liveNow}
+          span={span}
+          days={days}
+          now={now}
           lanes={lanes}
           events={events}
           painPoints={painPoints}
@@ -282,6 +360,19 @@ export function DayView({
           onContext={setMenu}
           onOpen={(t) => (t.kind === "level" ? setMenu(null) : setSheet(t))}
           onClearDay={() => setConfirmClear(true)}
+          clearDayLabel={focusLabel}
+          onVisibleChange={({ centerMs }) => {
+            const d = localDay(tz, new Date(centerMs));
+            setFocusDay((prev) => (prev === d ? prev : d));
+          }}
+          onNeedMore={needMore}
+          loading={loading}
+          initialCenterMs={
+            initialFocusDay === todayKey
+              ? now - (initialViewHours / 6) * 3_600_000
+              : dayBoundsMs(tz, initialFocusDay).start + 13 * 3_600_000
+          }
+          handle={timeline}
         />
         {pending && (
           <span className="absolute right-3 bottom-2 z-20 rounded-full bg-surface px-2 py-0.5 text-[11px] text-muted shadow">
@@ -291,47 +382,33 @@ export function DayView({
       </div>
 
       {/* bottom: pain glider */}
-      {isToday ? (
-        <div className="shrink-0">
-          <PainBar
-            current={savedPain}
-            onDraft={(level) => setDraft({ level, at: Date.now() })}
-            onCommit={(level) => {
-              if (level !== savedPain) ops.addLevel(level, Date.now());
-              setDraft(null);
-            }}
-          >
-            <button onClick={openQuickMenu} className="btn-primary px-3 py-2 text-sm whitespace-nowrap">
-              ▶ Start
-            </button>
-            <button
-              onClick={() => setManual({ from: Math.floor((Date.now() - 30 * 60000) / 60000) * 60000, to: Date.now() })}
-              className="btn-ghost px-3 py-2 text-sm whitespace-nowrap"
-            >
-              + Add…
-            </button>
-          </PainBar>
-        </div>
-      ) : (
-        <div className="flex shrink-0 items-center justify-center gap-3">
-          <button
-            onClick={() => setManual({ from: data.startMs + 12 * 3600000, to: data.startMs + 12.5 * 3600000 })}
-            className="btn-ghost px-3 py-2 text-sm"
-          >
-            + Add action
+      <div className="shrink-0">
+        <PainBar
+          current={savedPain}
+          onDraft={(level) => setDraft({ level, at: Date.now() })}
+          onCommit={(level) => {
+            if (level !== savedPain) ops.addLevel(level, Date.now());
+            setDraft(null);
+          }}
+        >
+          <button onClick={openQuickMenu} className="btn-primary px-3 py-2 text-sm whitespace-nowrap">
+            ▶ Start
           </button>
-          <p className="text-xs text-muted">
-            or drag across the timeline · right-click for more
-          </p>
-        </div>
-      )}
+          <button
+            onClick={() => setManual({ from: Math.floor((Date.now() - 30 * 60000) / 60000) * 60000, to: Date.now() })}
+            className="btn-ghost px-3 py-2 text-sm whitespace-nowrap"
+          >
+            + Add…
+          </button>
+        </PainBar>
+      </div>
 
       {menu && (
         <ContextMenu
           key={`${menu.x}-${menu.y}-${menu.at}`}
           tz={tz}
           req={menu}
-          now={liveNow}
+          now={now}
           actions={actions}
           actionTypes={data.actionTypes}
           painTypes={data.painTypes}
@@ -439,21 +516,27 @@ export function DayView({
 
       {confirmClear && (
         <ConfirmDialog
-          title={`Erase ${isToday ? "today" : formatDay(data.day)}?`}
+          title={`Erase ${focusLabel}?`}
           confirmLabel="Yes, erase"
           pending={pending}
           onClose={() => setConfirmClear(false)}
           onConfirm={() => {
-            ops.clearDay(data.startMs, data.endMs);
+            ops.clearDay(focusBounds.start, focusBounds.end);
             setConfirmClear(false);
           }}
           body={
             <>
-              <p>This deletes everything logged on this day:</p>
+              <p>This deletes everything logged on {focusIsToday ? "today" : formatDay(focusDay)}:</p>
               <ul className="mt-2 ml-4 list-disc">
-                <li>{actions.length} action{actions.length === 1 ? "" : "s"}</li>
-                <li>{entries.levels.length} pain reading{entries.levels.length === 1 ? "" : "s"}</li>
-                <li>{events.length} pain event{events.length === 1 ? "" : "s"}</li>
+                <li>
+                  {inFocusDay.actions} action{inFocusDay.actions === 1 ? "" : "s"}
+                </li>
+                <li>
+                  {inFocusDay.levels} pain reading{inFocusDay.levels === 1 ? "" : "s"}
+                </li>
+                <li>
+                  {inFocusDay.events} pain event{inFocusDay.events === 1 ? "" : "s"}
+                </li>
               </ul>
               <p className="mt-2 text-muted">This cannot be undone.</p>
             </>
@@ -462,7 +545,10 @@ export function DayView({
       )}
 
       {error && (
-        <div role="alert" className="fixed inset-x-0 bottom-24 z-50 mx-auto w-max max-w-[90vw] rounded-full bg-red-600 px-4 py-2 text-sm text-white shadow-lg">
+        <div
+          role="alert"
+          className="fixed inset-x-0 bottom-24 z-50 mx-auto w-max max-w-[90vw] rounded-full bg-red-600 px-4 py-2 text-sm text-white shadow-lg"
+        >
           {error}
         </div>
       )}

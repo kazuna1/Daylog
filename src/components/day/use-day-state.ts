@@ -1,7 +1,7 @@
 "use client";
 
 import { useOptimistic, useState, useTransition } from "react";
-import type { DayData } from "@/lib/day-data";
+import type { RangeEntries } from "@/lib/day-data";
 import type { Action, ActionType, Exercise, PainEvent, PainType } from "@/lib/database.types";
 import {
   addAction,
@@ -21,8 +21,8 @@ import {
   type Result,
 } from "@/app/(app)/timeline-actions";
 
-type Level = DayData["levels"][number];
-type Entries = { actions: Action[]; levels: Level[]; events: PainEvent[] };
+type Level = RangeEntries["levels"][number];
+type Entries = RangeEntries;
 
 type Op =
   | { kind: "addAction"; row: Action }
@@ -33,7 +33,7 @@ type Op =
   | { kind: "addEvent"; row: PainEvent }
   | { kind: "patchEvent"; id: string; patch: Partial<PainEvent> }
   | { kind: "deleteEvent"; id: string }
-  | { kind: "clearDay" };
+  | { kind: "clearDay"; startMs: number; endMs: number };
 
 function reduce(state: Entries, op: Op): Entries {
   switch (op.kind) {
@@ -56,8 +56,19 @@ function reduce(state: Entries, op: Op): Entries {
       return { ...state, events: state.events.map((e) => (e.id === op.id ? { ...e, ...op.patch } : e)) };
     case "deleteEvent":
       return { ...state, events: state.events.filter((e) => e.id !== op.id) };
-    case "clearDay":
-      return { actions: [], levels: [], events: [] };
+    case "clearDay": {
+      const inside = (iso: string) => {
+        const t = new Date(iso).getTime();
+        return t >= op.startMs && t < op.endMs;
+      };
+      return {
+        actions: state.actions.filter(
+          (a) => !(new Date(a.started_at).getTime() < op.endMs && (a.ended_at === null || new Date(a.ended_at).getTime() > op.startMs)),
+        ),
+        levels: state.levels.filter((l) => !inside(l.recorded_at)),
+        events: state.events.filter((e) => !inside(e.occurred_at)),
+      };
+    }
   }
 }
 
@@ -67,19 +78,26 @@ const iso = (ms: number) => new Date(ms).toISOString();
  * Day entries with optimistic mutations: the screen updates instantly, the server
  * call runs in the background, and a failed call rolls the change back.
  */
-export function useDayState(data: DayData) {
+export function useDayState(initial: Entries, reload: () => Promise<Entries | null>) {
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
-  const [entries, apply] = useOptimistic<Entries, Op>(
-    { actions: data.actions, levels: data.levels, events: data.events },
-    reduce,
-  );
+  // What the server last gave us for the loaded stretch of days.
+  const [loaded, setLoaded] = useState<Entries>(initial);
+  const [lastInitial, setLastInitial] = useState(initial);
+  if (initial !== lastInitial) {
+    setLastInitial(initial);
+    setLoaded(initial);
+  }
+  const [entries, apply] = useOptimistic<Entries, Op>(loaded, reduce);
 
   function mutate(op: Op, call: () => Promise<Result>) {
     startTransition(async () => {
       apply(op);
       const res = await call();
       if (res.error) setError(res.error);
+      // Re-read the stretch so the optimistic copy hands over to real rows.
+      const fresh = await reload();
+      if (fresh) setLoaded(fresh);
     });
   }
 
@@ -264,7 +282,7 @@ export function useDayState(data: DayData) {
       mutate({ kind: "deleteEvent", id }, () => deletePainEvent(id));
     },
     clearDay(startMs: number, endMs: number) {
-      mutate({ kind: "clearDay" }, () => clearDay({ startMs, endMs }));
+      mutate({ kind: "clearDay", startMs, endMs }, () => clearDay({ startMs, endMs }));
     },
   };
 
@@ -276,5 +294,14 @@ export function useDayState(data: DayData) {
     });
   }
 
-  return { entries, ops, call, pending, error, clearError: () => setError(null) };
+  return {
+    entries,
+    ops,
+    call,
+    /** Swap in a freshly loaded stretch (after scrolling further back). */
+    replace: setLoaded,
+    pending,
+    error,
+    clearError: () => setError(null),
+  };
 }
