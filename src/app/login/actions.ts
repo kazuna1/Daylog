@@ -33,8 +33,8 @@ export async function signIn(_: LoginState, fd: FormData): Promise<LoginState> {
   });
   if (error) return { error: `Database login failed: ${error.message}` };
 
-  // First login gets the starter action & pain types (no-op afterwards).
-  await supabase.rpc("seed_default_types");
+  // No starter set on login: an empty app stays empty until you add your own.
+  // Settings still offers the starter set as a button if you ever want it.
   redirect("/");
 }
 

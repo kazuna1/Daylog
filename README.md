@@ -35,7 +35,7 @@ Personal day timeline for back pain. Log what you do (with start/end), how your 
 | `pain_levels` | Pain readings (0–10). Each holds until the next → a continuous line |
 | `pain_events` | One-off pain moments of a given type, with intensity |
 
-All tables have owner-only RLS. `seed_default_types()` adds the starter set on first login.
+All tables have owner-only RLS. Nothing is created automatically: a fresh account stays empty until you add your own activities, exercises and pain types. Settings offers `seed_default_types()` as an opt-in **Add starter set** button while everything is empty.
 Because the pain line is continuous, "pain before/after an action" can be derived for analysis later.
 
 Times are stored in UTC; the browser's timezone is synced to a `tz` cookie so "today" is computed correctly on the server.
