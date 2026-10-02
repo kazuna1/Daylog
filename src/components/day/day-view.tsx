@@ -5,7 +5,7 @@ import type { TimelineData } from "@/lib/day-data";
 import { clipActions, packLanes, painSeries, type PainPoint } from "@/lib/day";
 import { addDays, dayBoundsMs, formatDay, formatDuration, formatTime, localDay, minutesOfDay } from "@/lib/time";
 import { useDayState } from "./use-day-state";
-import { fetchEntries, removeTimerTask, saveTimerTask } from "@/app/(app)/timeline-actions";
+import { fetchEntries } from "@/app/(app)/timeline-actions";
 import { Sky } from "./sky";
 import { Timeline, type ContextRequest, type DayMark, type Target, type TimelineHandle } from "./timeline";
 import { saveViewHours } from "@/lib/view";
@@ -71,7 +71,7 @@ export function DayView({
     return res.data ?? null;
   }, []);
 
-  const { entries, ops, call, replace, pending, error, clearError } = useDayState(
+  const { entries, ops, replace, pending, error, clearError } = useDayState(
     useMemo(() => ({ actions: data.actions, levels: data.levels, events: data.events }), [data]),
     reload,
   );
@@ -339,9 +339,6 @@ export function DayView({
         onFixEnd={() => current && setEnding({ id: current.id, at: new Date(current.started_at).getTime() + 3_600_000 })}
         onPain={(pain) => current && ops.setPain(current.id, pain)}
         onNotes={(notes) => current && ops.setNotes(current.id, notes)}
-        onSaveTask={(v) => call(() => saveTimerTask(v))}
-        onRemoveTask={(id) => call(() => removeTimerTask(id))}
-        pending={pending}
       />
 
       {/* the continuous strip */}

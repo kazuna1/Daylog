@@ -58,15 +58,6 @@ function notify(title: string, body: string) {
   }
 }
 
-export type TaskDraft = {
-  id: string | null;
-  name: string;
-  emoji: string | null;
-  notifyAfterMin: number | null;
-  endAfterMin: number | null;
-  nextTypeId: string | null;
-};
-
 /**
  * The timer field: tap a task to start it (and end the previous one). Each task
  * carries two independent timers — one that only notifies you, and one that ends
@@ -83,9 +74,6 @@ export function TimerField({
   onFixEnd,
   onPain,
   onNotes,
-  onSaveTask,
-  onRemoveTask,
-  pending,
 }: {
   tz: string;
   types: ActionType[];
@@ -100,12 +88,8 @@ export function TimerField({
   onFixEnd: () => void;
   onPain: (pain: number | null) => void;
   onNotes: (notes: string) => void;
-  onSaveTask: (v: TaskDraft) => void;
-  onRemoveTask: (id: string) => void;
-  pending: boolean;
 }) {
   const [tick, setTick] = useState(now);
-  const [permission, setPermission] = useState<NotificationPermission | "unsupported" | null>(null);
   const browserPermission = useSyncExternalStore(subscribeNothing, readPermission, () => "default" as const);
   // Note box and pain row follow whichever action is running.
   const [ui, setUi] = useState<{ id: string | null; note: string; showPain: boolean }>({
@@ -121,9 +105,6 @@ export function TimerField({
   const setShowPain = (v: boolean) => setUi((u) => ({ ...u, showPain: v }));
   const alerted = useRef<{ id: string; at: number } | null>(null);
   const autoEnded = useRef<string | null>(null);
-  // null = closed, "new" = adding, otherwise the task being edited
-  const [editing, setEditing] = useState<ActionType | "new" | null>(null);
-
   const tasks = types.filter((t) => t.timer && !t.archived);
   const byId = (id: string | null | undefined) => (id ? types.find((t) => t.id === id) ?? null : null);
   const runningType = running ? byId(running.type_id) : null;
@@ -216,7 +197,7 @@ export function TimerField({
           : Math.max(0, leftToNotify / notifyMs)
         : 0;
   const hasBar = endMs !== null || notifyMs !== null;
-  const alerts = permission ?? browserPermission;
+  const alerts = browserPermission;
 
   return (
     <section
@@ -225,8 +206,17 @@ export function TimerField({
         over ? "animate-pulse border-[var(--pain-max)] bg-[var(--pain-max)]/10" : "border-line bg-surface"
       }`}
     >
-      <div className="flex items-center gap-3">
-        {running ? (
+      <div className="flex items-baseline justify-between gap-3">
+        <h2 className="text-[11px] font-semibold tracking-wider text-muted uppercase">Focus timer</h2>
+        {alerts === "denied" && (
+          <span className="text-[11px] text-muted" title="Allow notifications for this site in your browser settings">
+            🔕 alerts blocked
+          </span>
+        )}
+      </div>
+
+      {running && (
+        <div className="flex items-center gap-3">
           <div className="flex min-w-0 flex-1 items-center gap-3">
             <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl text-xl" style={{ background: `${running.color}22` }}>
               {runningType?.emoji ?? "▶"}
@@ -244,10 +234,8 @@ export function TimerField({
                   {bigClock}
                 </span>
                 {runningType && (
-                  <button
-                    onClick={() => setEditing(runningType)}
-                    className={`truncate text-xs tabular-nums ${over ? "font-semibold text-[var(--pain-max)]" : "text-muted"} underline decoration-dotted underline-offset-2`}
-                    title="Change this activity's timers"
+                  <span
+                    className={`truncate text-xs tabular-nums ${over ? "font-semibold text-[var(--pain-max)]" : "text-muted"}`}
                   >
                     {clock(elapsed)} so far
                     {notifyMs !== null &&
@@ -255,16 +243,12 @@ export function TimerField({
                     {dueAt !== null && ` · ⏹ ends ${formatTime(tz, dueAt)}`}
                     {nextLive && ` → ${nextLive.emoji ?? ""} ${nextLive.name}`}
                     {notifyMs === null && endMs === null && " · no timers"}
-                  </button>
+                  </span>
                 )}
               </p>
             </div>
           </div>
-        ) : (
-          <p className="flex-1 text-sm text-muted">Tap a task to start the timer — it logs straight to the timeline.</p>
-        )}
 
-        {running && (
           <div className="flex shrink-0 items-center gap-1.5">
             <button
               onClick={() => setShowPain(!showPain)}
@@ -277,8 +261,8 @@ export function TimerField({
               Stop
             </button>
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
       {stale && running && (
         <div className="flex flex-wrap items-center gap-2 rounded-2xl bg-[var(--pain-max)]/10 px-3 py-2 text-sm">
@@ -333,24 +317,6 @@ export function TimerField({
         </div>
       )}
 
-      {editing && (
-        <TaskEditor
-          key={editing === "new" ? "new" : editing.id}
-          task={editing === "new" ? null : editing}
-          options={types.filter((t) => !t.archived && t.id !== (editing === "new" ? null : editing.id))}
-          pending={pending}
-          onSave={(v) => {
-            onSaveTask(v);
-            setEditing(null);
-          }}
-          onRemove={(id) => {
-            onRemoveTask(id);
-            setEditing(null);
-          }}
-          onClose={() => setEditing(null)}
-        />
-      )}
-
       <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
         {tasks.map((t) => {
           const active = running?.type_id === t.id;
@@ -359,17 +325,12 @@ export function TimerField({
             <button
               key={t.id}
               onClick={() => onSwitch(t)}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                setEditing(t);
-              }}
               title={[
                 t.limit_min && `Notifies after ${t.limit_min} min`,
                 t.end_min && `Ends after ${t.end_min} min${follows ? ` and starts ${follows.name}` : ""}`,
-                "right-click to edit",
               ]
                 .filter(Boolean)
-                .join(" · ")}
+                .join(" · ") || t.name}
               className={`flex shrink-0 items-center gap-1.5 rounded-xl border px-2.5 py-2 text-sm font-medium transition active:scale-95 ${
                 active ? "border-transparent text-white" : "border-line bg-surface hover:bg-surface-2"
               }`}
@@ -388,220 +349,16 @@ export function TimerField({
             </button>
           );
         })}
-        <button
-          onClick={() => setEditing(editing === "new" ? null : "new")}
-          className="flex shrink-0 items-center gap-1 rounded-xl border border-dashed border-line px-2.5 py-2 text-sm text-muted hover:text-ink"
-          title="Add an activity with its timers"
-        >
-          ＋ Activity
-        </button>
         {tasks.length === 0 && (
-          <p className="text-xs text-muted">No activities yet — add one.</p>
-        )}
-        {alerts === "default" && (
-          <button
-            onClick={() => Notification.requestPermission().then(setPermission)}
-            className="ml-auto shrink-0 rounded-xl border border-line px-2.5 py-2 text-xs whitespace-nowrap text-muted"
-          >
-            🔔 Enable alerts
-          </button>
-        )}
-        {alerts === "denied" && (
-          <span className="ml-auto shrink-0 text-xs text-muted" title="Allow notifications in your browser settings">
-            🔕 alerts blocked
-          </span>
+          <p className="text-xs text-muted">
+            No activities on the bar yet — add them in{" "}
+            <a className="underline underline-offset-2" href="/configuration">
+              Configuration
+            </a>
+            .
+          </p>
         )}
       </div>
     </section>
-  );
-}
-
-/** Add or edit an activity on the timer line, together with both of its timers. */
-function TaskEditor({
-  task,
-  options,
-  pending,
-  onSave,
-  onRemove,
-  onClose,
-}: {
-  task: ActionType | null;
-  /** Everything this activity is allowed to hand over to. */
-  options: ActionType[];
-  pending: boolean;
-  onSave: (v: TaskDraft) => void;
-  onRemove: (id: string) => void;
-  onClose: () => void;
-}) {
-  const [name, setName] = useState(task?.name ?? "");
-  const [emoji, setEmoji] = useState(task?.emoji ?? "");
-  // Both timers are opt-in per activity: the toggle enables the minutes field.
-  const [notify, setNotify] = useState(task?.limit_min != null);
-  const [minutes, setMinutes] = useState(task?.limit_min ? String(task.limit_min) : "30");
-  const [autoEnd, setAutoEnd] = useState(task?.end_min != null);
-  const [endMinutes, setEndMinutes] = useState(task?.end_min ? String(task.end_min) : "20");
-  const [next, setNext] = useState(task?.next_type_id ?? "");
-
-  const parse = (on: boolean, raw: string) => (!on || raw.trim() === "" ? null : Number(raw));
-  const bad = (on: boolean, v: number | null) => on && (v === null || !Number.isInteger(v) || v < 1 || v > 600);
-
-  const notifyAfterMin = parse(notify, minutes);
-  const endAfterMin = parse(autoEnd, endMinutes);
-  const badMinutes = bad(notify, notifyAfterMin);
-  const badEnd = bad(autoEnd, endAfterMin);
-  const alertNeverFires =
-    notify && autoEnd && !badMinutes && !badEnd && endAfterMin! <= notifyAfterMin!;
-  const canSave = name.trim() !== "" && !badMinutes && !badEnd && !pending;
-  const nextName = options.find((o) => o.id === next)?.name ?? null;
-
-  return (
-    <form
-      className="flex flex-wrap items-end gap-2 rounded-2xl border border-line bg-surface-2/60 p-2.5"
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (canSave) {
-          onSave({
-            id: task?.id ?? null,
-            name: name.trim(),
-            emoji: emoji.trim() || null,
-            notifyAfterMin,
-            endAfterMin,
-            nextTypeId: autoEnd && next !== "" ? next : null,
-          });
-        }
-      }}
-    >
-      <label className="flex flex-col gap-1">
-        <span className="text-[10px] font-semibold tracking-wider text-muted uppercase">Icon</span>
-        <input
-          className="input w-14 px-2 py-1.5 text-center text-sm"
-          value={emoji}
-          onChange={(e) => setEmoji(e.target.value)}
-          placeholder="🙂"
-          maxLength={8}
-          aria-label="Icon"
-        />
-      </label>
-      <label className="flex min-w-32 flex-1 flex-col gap-1">
-        <span className="text-[10px] font-semibold tracking-wider text-muted uppercase">Activity</span>
-        <input
-          className="input py-1.5 text-sm"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="e.g. Standing desk"
-          maxLength={60}
-          autoFocus
-          aria-label="Activity name"
-        />
-      </label>
-
-      <div className="flex flex-col gap-1">
-        <label className="flex items-center gap-1.5 text-[10px] font-semibold tracking-wider text-muted uppercase">
-          <input
-            type="checkbox"
-            checked={notify}
-            onChange={(e) => setNotify(e.target.checked)}
-            aria-label="Notify me about this activity"
-          />
-          🔔 Notify after
-        </label>
-        <span className="flex items-center gap-1">
-          <input
-            className={`input w-20 px-2 py-1.5 text-sm ${notify ? "" : "opacity-40"}`}
-            type="number"
-            min={1}
-            max={600}
-            value={notify ? minutes : ""}
-            disabled={!notify}
-            onChange={(e) => setMinutes(e.target.value)}
-            placeholder="off"
-            aria-label="Notify after minutes"
-          />
-          <span className={`text-xs text-muted ${notify ? "" : "opacity-40"}`}>min</span>
-        </span>
-      </div>
-
-      <div className="flex flex-col gap-1">
-        <label className="flex items-center gap-1.5 text-[10px] font-semibold tracking-wider text-muted uppercase">
-          <input
-            type="checkbox"
-            checked={autoEnd}
-            onChange={(e) => setAutoEnd(e.target.checked)}
-            aria-label="End this activity by itself"
-          />
-          ⏹ End after
-        </label>
-        <span className="flex items-center gap-1">
-          <input
-            className={`input w-20 px-2 py-1.5 text-sm ${autoEnd ? "" : "opacity-40"}`}
-            type="number"
-            min={1}
-            max={600}
-            value={autoEnd ? endMinutes : ""}
-            disabled={!autoEnd}
-            onChange={(e) => setEndMinutes(e.target.value)}
-            placeholder="off"
-            aria-label="End after minutes"
-          />
-          <span className={`text-xs text-muted ${autoEnd ? "" : "opacity-40"}`}>min</span>
-          <span className={`text-xs text-muted ${autoEnd ? "" : "opacity-40"}`}>→ then start</span>
-          <select
-            className={`input w-40 px-2 py-1.5 text-sm ${autoEnd ? "" : "opacity-40"}`}
-            value={next}
-            disabled={!autoEnd}
-            onChange={(e) => setNext(e.target.value)}
-            aria-label="Activity to start next"
-          >
-            <option value="">nothing</option>
-            {options.map((o) => (
-              <option key={o.id} value={o.id}>
-                {o.emoji ? `${o.emoji} ` : ""}
-                {o.name}
-              </option>
-            ))}
-          </select>
-        </span>
-      </div>
-
-      <div className="flex items-center gap-1.5">
-        <button className="btn-primary px-3 py-2 text-sm" disabled={!canSave}>
-          {task ? "Save" : "Add"}
-        </button>
-        {task && (
-          <button
-            type="button"
-            className="btn-ghost text-xs text-muted"
-            disabled={pending}
-            onClick={() => onRemove(task.id)}
-            title="Keeps the activity and its history, just off this line"
-          >
-            Remove from line
-          </button>
-        )}
-        <button type="button" className="text-muted" onClick={onClose} aria-label="Close editor">
-          ✕
-        </button>
-      </div>
-
-      {(badMinutes || badEnd) && <p className="w-full text-xs text-red-600">Timers must be 1–600 minutes.</p>}
-      {alertNeverFires && (
-        <p className="w-full text-xs text-red-600">
-          It ends at {endMinutes} min, before the alert at {minutes} min — so the alert never fires.
-        </p>
-      )}
-      <p className="w-full text-[11px] text-muted">
-        {!notify && !autoEnd
-          ? "No timers — it just runs and logs until you switch."
-          : [
-              notify && "Notify only sends a browser alert (then every 5 min) and keeps counting.",
-              autoEnd &&
-                (nextName
-                  ? `End stops it by itself and starts ${nextName} — needs this tab open.`
-                  : "End stops it by itself — needs this tab open."),
-            ]
-              .filter(Boolean)
-              .join(" ")}
-      </p>
-    </form>
   );
 }
