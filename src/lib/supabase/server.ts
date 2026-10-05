@@ -3,7 +3,13 @@ import { cookies } from "next/headers";
 import type { Database } from "@/lib/database.types";
 import { missingEnv, missingEnvMessage } from "@/lib/env";
 
-export async function createClient() {
+/**
+ * `attempt` is only for retries. Next remembers the result of a fetch for the
+ * rest of the render, so repeating the identical request hands back the first
+ * answer — including its failure — without going near the network. The header
+ * makes a retry a different request, so it really is one.
+ */
+export async function createClient(attempt = 0) {
   const missing = missingEnv();
   if (missing.length > 0) throw new Error(missingEnvMessage(missing));
 
@@ -13,6 +19,7 @@ export async function createClient() {
     process.env.SUPABASE_URL!,
     process.env.SUPABASE_PUBLISHABLE_KEY!,
     {
+      global: attempt > 0 ? { headers: { "x-daylog-attempt": String(attempt) } } : undefined,
       cookies: {
         getAll() {
           return cookieStore.getAll();
